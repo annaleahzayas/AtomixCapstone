@@ -222,6 +222,61 @@ try {
             gap: 10px;
             width: 100%;
         }
+        .bank-select-wrapper:focus-within { position: relative; z-index: 101; }
+        .question-picker { position: relative; min-width: 0; margin-top: 5px; }
+        .question-picker input {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #fff;
+            color: #334155;
+            font-size: 12px;
+        }
+        .question-picker input:focus { outline: 2px solid #bfdbfe; border-color: #3b82f6; }
+        .question-picker-options {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            z-index: 100;
+            max-height: 280px;
+            overflow-y: auto;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            background: #fff;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+        }
+        .question-picker-options[hidden] { display: none; }
+        .question-picker-option {
+            display: block;
+            width: 100%;
+            padding: 9px 11px;
+            border: 0;
+            border-bottom: 1px solid #f1f5f9;
+            background: #fff;
+            color: #334155;
+            text-align: left;
+            cursor: pointer;
+        }
+        .question-picker-option:hover, .question-picker-option:focus { background: #eff6ff; outline: none; }
+        .question-picker-option-context {
+            display: block;
+            overflow: hidden;
+            color: #64748b;
+            font-size: 10px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .question-picker-option-text {
+            display: block;
+            overflow: hidden;
+            margin-top: 2px;
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .question-picker-empty { padding: 12px; color: #64748b; font-size: 12px; }
 
         .section {
             border: 1px solid #e2e8f0;
@@ -608,8 +663,39 @@ let liveInterval = null;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s||'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
+function formatLocalDateTime(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function updateScheduleMinimums() {
+    const startInput = $('start');
+    const endInput = $('end');
+    startInput.min = formatLocalDateTime(new Date());
+    endInput.min = startInput.value || formatLocalDateTime(new Date());
+}
+
+function validateSchedule() {
+    const startValue = $('start').value;
+    const endValue = $('end').value;
+    if (!startValue && !endValue) return null;
+    if (!startValue || !endValue) return 'Enter both the exam start and end date/time, or leave both blank.';
+
+    const startTime = new Date(startValue).getTime();
+    const endTime = new Date(endValue).getTime();
+    const now = new Date();
+    now.setSeconds(0, 0);
+    if (Number.isNaN(startTime) || Number.isNaN(endTime)) return 'Enter valid start and end date/times.';
+    if (startTime < now.getTime()) return 'The exam start date/time cannot be in the past.';
+    if (endTime <= startTime) return 'The exam end date/time must be later than its start.';
+    return null;
+}
+
 function showLoading(text="Processing..."){ $('loadingText').textContent = text; $('loadingOverlay').style.display = 'flex'; }
 function hideLoading(){ $('loadingOverlay').style.display = 'none'; }
+
+$('start').addEventListener('input', updateScheduleMinimums);
+updateScheduleMinimums();
 
 async function safeFetchJson(url, options = {}) {
     const res = await fetch(url, options);
@@ -691,14 +777,12 @@ function updateChoice(i,q,choiceIdx,value){
     sections[i].questions[q].choices[choiceIdx] = value;
 }
 
-function bankOptions(i) {
+function getBankQuestionsForSection(i) {
     let currentType = (sections[i].section_type || '').toLowerCase().trim();
     
-    // Strictly filter bank questions matching the section type
-    let filtered = bankQuestions.filter(q => {
+    return bankQuestions.filter(q => {
         let qType = (q.question_type || q.type || '').toLowerCase().trim();
         
-        // Handle variations (e.g. "multiple_choice" vs "multiple choice")
         if (currentType === 'multiple_choice') {
             return qType === 'multiple_choice' || qType === 'multiple choice' || qType === 'mcq';
         }
@@ -714,16 +798,77 @@ function bankOptions(i) {
         
         return qType === currentType;
     });
+}
+
+function renderBankOptions(i, search = '') {
+    const options = $(`bank-options-${i}`);
+    if (!options) return;
+
+    const query = search.trim().toLowerCase();
+    const filtered = getBankQuestionsForSection(i).filter(q => {
+        const searchableText = `${q.chapter_title || ''} ${q.lesson_title || ''} ${q.question_text || ''}`.toLowerCase();
+        return searchableText.includes(query);
+    });
 
     if (!filtered.length) {
-        return `<option value="">No ${currentType.replace('_', ' ')} questions found in Bank</option>`;
+        options.innerHTML = '<div class="question-picker-empty">No matching questions found.</div>';
+        return;
     }
 
-    return filtered.map(q => {
-        let displayText = `${q.chapter_title || 'Chapter'} - ${q.lesson_title || 'Lesson'}: ${q.question_text || 'Untitled Question'}`;
-        return `<option value="${q.question_id}">${esc(displayText)}</option>`;
+    options.innerHTML = filtered.map(q => {
+        const context = `${q.chapter_title || 'Chapter'} · ${q.lesson_title || 'Lesson'}`;
+        const questionText = q.question_text || 'Untitled Question';
+        return `<button type="button" class="question-picker-option" role="option" title="${esc(`${context}: ${questionText}`)}" onkeydown="handleBankOptionKeydown(event, ${i})" onclick="insertBankQuestion(${i}, ${Number(q.question_id)})">
+            <span class="question-picker-option-context">${esc(context)}</span>
+            <span class="question-picker-option-text">${esc(questionText)}</span>
+        </button>`;
     }).join('');
 }
+
+function showBankOptions(i) {
+    const options = $(`bank-options-${i}`);
+    const search = $(`bank-search-${i}`);
+    if (!options || !search) return;
+    renderBankOptions(i, search.value);
+    options.hidden = false;
+}
+
+function handleBankPickerKeydown(event, i) {
+    const options = $(`bank-options-${i}`);
+    if (event.key === 'Escape') {
+        options.hidden = true;
+        event.target.blur();
+    } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        options.hidden = false;
+        const firstOption = options.querySelector('.question-picker-option');
+        if (firstOption) firstOption.focus();
+    }
+}
+
+function handleBankOptionKeydown(event, i) {
+    const options = $(`bank-options-${i}`);
+    if (event.key === 'Escape') {
+        options.hidden = true;
+        $(`bank-search-${i}`).focus();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const optionButtons = Array.from(options.querySelectorAll('.question-picker-option'));
+        const currentIndex = optionButtons.indexOf(event.target);
+        const nextIndex = event.key === 'ArrowDown'
+            ? Math.min(currentIndex + 1, optionButtons.length - 1)
+            : Math.max(currentIndex - 1, 0);
+        if (optionButtons[nextIndex]) optionButtons[nextIndex].focus();
+    }
+}
+
+document.addEventListener('click', event => {
+    if (event.target instanceof Element && !event.target.closest('.question-picker')) {
+        document.querySelectorAll('.question-picker-options').forEach(options => {
+            options.hidden = true;
+        });
+    }
+});
 
 function insertBankQuestion(i, id) {
     if (!id) return;
@@ -760,10 +905,6 @@ function insertBankQuestion(i, id) {
         correctAnswer: defaultAnswer
     });
 
-    // Reset dropdown selector after adding
-    let selectEl = $(`bank-${i}`);
-    if (selectEl) selectEl.value = '';
-
     renderSections();
 }
 
@@ -794,10 +935,16 @@ function renderSections(){
             <div class="bank-select-wrapper">
                 <div style="flex:1;">
                     <span style="font-size:11px; font-weight:600; color:#1e40af;"><i class="fas fa-list-ul"></i> Manual Question Bank Import (${esc(s.section_type.replace('_',' '))}):</span>
-                    <select id="bank-${i}" onchange="insertBankQuestion(${i},this.value)" style="width:100%;">
-                        <option value="">-- Choose question to add manually --</option>
-                        ${bankOptions(i)}
-                    </select>
+                    <div class="question-picker">
+                        <input id="bank-search-${i}" type="search" autocomplete="off"
+                            placeholder="Search and choose a question to add..."
+                            aria-label="Search question bank"
+                            aria-controls="bank-options-${i}"
+                            onfocus="showBankOptions(${i})"
+                            oninput="renderBankOptions(${i}, this.value)"
+                            onkeydown="handleBankPickerKeydown(event, ${i})">
+                        <div id="bank-options-${i}" class="question-picker-options" role="listbox" hidden></div>
+                    </div>
                 </div>
                 <div>
                     <button type="button" class="btn" style="background: linear-gradient(135deg, #10b981, #059669); color: white;" onclick="openSectionAiAssistant(${i})">
@@ -936,6 +1083,12 @@ $('examForm').addEventListener('submit', async ev => {
     let currentExamId = Number($('examId').value || 0);
     let class_ids = [...document.querySelectorAll('input[name=class]:checked')].map(x=>Number(x.value));
     let is_deployed = Number(document.querySelector('input[name="is_deployed"]:checked').value);
+
+    updateScheduleMinimums();
+    const scheduleError = validateSchedule();
+    if (scheduleError) {
+        return Swal.fire('Invalid Exam Schedule', scheduleError, 'warning');
+    }
     
     if(!class_ids.length){
         return Swal.fire('Target Class Required', 'Please assign at least one target class.', 'warning');

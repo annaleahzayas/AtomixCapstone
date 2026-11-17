@@ -476,11 +476,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($action, ['save', 'delete'
     $sections = $data['sections'] ?? [];
     $is_deployed = (int)($data['is_deployed'] ?? 0);
     $force_override = (bool)($data['force_override'] ?? false);
+    $startTime = trim((string)($data['start_time'] ?? ''));
+    $endTime = trim((string)($data['end_time'] ?? ''));
 
     if (!$title || !$classes || !is_array($sections) || !$sections) { 
         http_response_code(422); 
         echo json_encode(['success' => false, 'error' => 'Title, target class, and at least one section are required.']); 
         exit; 
+    }
+
+    if (($startTime === '') !== ($endTime === '')) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Enter both the exam start and end date/time, or leave both blank.']);
+        exit;
+    }
+
+    if ($startTime !== '') {
+        $parsedStart = DateTimeImmutable::createFromFormat('!Y-m-d H:i', $startTime);
+        $startErrors = DateTimeImmutable::getLastErrors();
+        $parsedEnd = DateTimeImmutable::createFromFormat('!Y-m-d H:i', $endTime);
+        $endErrors = DateTimeImmutable::getLastErrors();
+
+        if (!$parsedStart || !$parsedEnd
+            || ($startErrors !== false && ($startErrors['warning_count'] > 0 || $startErrors['error_count'] > 0))
+            || ($endErrors !== false && ($endErrors['warning_count'] > 0 || $endErrors['error_count'] > 0))
+        ) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'Enter valid start and end date/times.']);
+            exit;
+        }
+
+        $now = new DateTimeImmutable('now');
+        $now = $now->setTime((int)$now->format('H'), (int)$now->format('i'));
+        if ($parsedStart < $now) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'The exam start date/time cannot be in the past.']);
+            exit;
+        }
+        if ($parsedEnd <= $parsedStart) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'The exam end date/time must be later than its start.']);
+            exit;
+        }
     }
 
     $classCheck = $db->prepare('SELECT class_id FROM classes WHERE class_id = ? AND teacher_id = ?'); 
@@ -538,8 +575,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($action, ['save', 'delete'
                 trim($data['department_subtitle'] ?? ''), 
                 max(1, (int)($data['duration_minutes'] ?? 60)), 
                 $is_deployed,
-                !empty($data['start_time']) ? $data['start_time'] : null, 
-                !empty($data['end_time']) ? $data['end_time'] : null, 
+                $startTime !== '' ? $startTime : null,
+                $endTime !== '' ? $endTime : null,
                 $id
             ]);
 
@@ -554,8 +591,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($action, ['save', 'delete'
                 trim($data['department_subtitle'] ?? ''), 
                 max(1, (int)($data['duration_minutes'] ?? 60)), 
                 $is_deployed,
-                !empty($data['start_time']) ? $data['start_time'] : null, 
-                !empty($data['end_time']) ? $data['end_time'] : null
+                $startTime !== '' ? $startTime : null,
+                $endTime !== '' ? $endTime : null
             ]);
             $id = (int)$db->lastInsertId();
         }
